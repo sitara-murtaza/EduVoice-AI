@@ -1,0 +1,1 @@
+export default function NotFound(){return <main className="entry-card"><h1>A little off the learning path.</h1><p>That page is not available. Your learning dashboard is a good place to start.</p><a className="button" href="/dashboard">Go to dashboard</a></main>}
