@@ -1,19 +1,34 @@
 import {voiceSession} from '@/lib/edu/voice-context';
 import {interviewSession,interviewTypes,interviewDifficulties,interviewLanguages} from '@/lib/edu/interview-context';
-import {config,configured,supa,cookie,identity,rateLimit,stateSchema,tutor,grade,analyzeResume} from '@/lib/edu/server';
+import {config,configured,guestConfigured,guestIdentity,issueGuestSession,supa,cookie,identity,rateLimit,stateSchema,tutor,grade,analyzeResume} from '@/lib/edu/server';
+import {env} from 'cloudflare:workers';
 import {questions} from '@/lib/edu/content';
 import {z} from 'zod';
 export const dynamic='force-dynamic';
 const json=(data:unknown,status=200,headers:Record<string,string>={})=>Response.json(data,{status,headers:{'Cache-Control':'no-store',...headers}});
 async function handle(req:Request,{params}:{params:Promise<{path:string[]}>}){const path=(await params).path.join('/');try{
-if(path==='config')return json({demo:false,live:!!(config('GEMINI_API_KEY')||config('ASSEMBLYAI_API_KEY')),assembly:!!config('ASSEMBLYAI_API_KEY'),auth:configured(),agent:!!config('ASSEMBLYAI_API_KEY')});
-if(req.method!=='GET'){const origin=req.headers.get('origin');if(origin&&origin!==new URL(req.url).origin)return json({error:'Cross-origin requests are not permitted.'},403);if(Number(req.headers.get('content-length')||0)>8*1024*1024)return json({error:'Request is too large.'},413);}
+if(path==='config')return json({demo:false,live:!!(config('GEMINI_API_KEY')||config('ASSEMBLYAI_API_KEY')),assembly:!!config('ASSEMBLYAI_API_KEY'),auth:configured(),agent:!!config('ASSEMBLYAI_API_KEY'),guestSiteKey:guestConfigured()&&!configured()?config('TURNSTILE_SITE_KEY'):null});
+if(req.method!=='GET'){const origin=req.headers.get('origin');const allowedOrigin=config('FRONTEND_ORIGIN')||new URL(req.url).origin;if(origin&&origin!==allowedOrigin)return json({error:'Cross-origin requests are not permitted.'},403);if(Number(req.headers.get('content-length')||0)>8*1024*1024)return json({error:'Request is too large.'},413);}
+if(path==='guest/status')return json({active:!!await guestIdentity(req)});
+if(path==='guest/session'&&req.method==='POST'){
+  if(!guestConfigured()||configured())return json({error:'Guest access is not configured.'},503);
+  const binding=(env as unknown as {GLOBAL_AI_LIMITER?:{limit:(input:{key:string})=>Promise<{success:boolean}>}}).GLOBAL_AI_LIMITER;
+  if(!binding)return json({error:'Guest access limit is not configured.'},503);
+  if(!(await binding.limit({key:'guest-issuance'})).success)return json({error:'Please try again in a minute.'},429);
+  const {token}=z.object({token:z.string().min(1).max(2048)}).parse(await req.json());
+  const verify=await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({secret:config('TURNSTILE_SECRET_KEY'),response:token}),signal:AbortSignal.timeout(10000)});
+  if(!verify.ok)return json({error:'Verification is temporarily unavailable.'},502);
+  const result=await verify.json() as {success:boolean;hostname?:string};
+  if(!result.success||result.hostname!==new URL(config('FRONTEND_ORIGIN')).hostname)return json({error:'Human verification failed. Please try again.'},403);
+  return json({success:true},200,{'Set-Cookie':`edu_guest=${await issueGuestSession()}; HttpOnly; Secure; SameSite=Lax; Path=/api; Max-Age=86400`});
+}
 if(path==='auth/logout')return json({success:true},200,{'Set-Cookie':'edu_access=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0'});
 if(path==='auth/login'||path==='auth/signup'){if(!configured())return json({error:'Accounts are not configured yet. Contact the site administrator.'},503);if(!rateLimit('auth:'+req.headers.get('cf-connecting-ip')))return json({error:'Too many attempts. Try again in a minute.'},429);const b=z.object({email:z.string().email().max(254),password:z.string().min(8).max(128)}).parse(await req.json());const d=await supa(path.endsWith('signup')?'/auth/v1/signup':'/auth/v1/token?grant_type=password',{method:'POST',body:JSON.stringify(b)});const token=d.access_token||d.session?.access_token;if(!token)return json({confirmation:true,message:'Check your email to confirm your account, then sign in.'});return json({success:true},200,{'Set-Cookie':`edu_access=${token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=3600`});}
 const user=await identity(req);
 if(path==='state'){if(!configured())return json({local:true});if(!user)return json({error:'Sign in to load your saved learning profile.'},401);if(req.method==='GET'){const rows=await supa('/rest/v1/profiles?select=data&user_id=eq.'+encodeURIComponent(user.id),{},user.token);return json({state:rows[0]?.data||null})}const data=stateSchema.parse(await req.json());await supa('/rest/v1/profiles?on_conflict=user_id',{method:'POST',headers:{Prefer:'resolution=merge-duplicates'},body:JSON.stringify({user_id:user.id,data,updated_at:new Date().toISOString()})},user.token);return json({success:true});}
 // Paid AI endpoints require verified identity whenever a provider key is configured.
-const paid=config('GEMINI_API_KEY')||config('ASSEMBLYAI_API_KEY');if(paid&&!user)return json({error:'Please sign in before using live voice or AI.'},401);
+const paid=config('GEMINI_API_KEY')||config('ASSEMBLYAI_API_KEY');if(paid&&!user)return json({error:'Complete the human verification to use live AI.'},401);
+if(paid&&user?.id.startsWith('guest:')){const bindings=env as unknown as {AI_RATE_LIMITER?:{limit:(input:{key:string})=>Promise<{success:boolean}>};GLOBAL_AI_LIMITER?:{limit:(input:{key:string})=>Promise<{success:boolean}>}};if(!bindings.AI_RATE_LIMITER||!bindings.GLOBAL_AI_LIMITER)return json({error:'Guest usage limits are not configured.'},503);const [individual,global]=await Promise.all([bindings.AI_RATE_LIMITER.limit({key:user.id}),bindings.GLOBAL_AI_LIMITER.limit({key:'paid-ai'})]);if(!individual.success||!global.success)return json({error:'Live AI usage limit reached. Please try again later.'},429);}
 if(!rateLimit(user?.id||req.headers.get('cf-connecting-ip')||'anonymous'))return json({error:'Please wait a minute before trying again.'},429);
 if(path==='voice/message')return json(await tutor(await req.json()));
 if(path==='resume/analyze')return json(await analyzeResume(await req.json()));
