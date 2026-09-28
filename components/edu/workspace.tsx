@@ -1,7 +1,7 @@
+'use client';
 import VoiceTutor from './voice-tutor';
 import ResumeAnalyzer from './resume-analyzer';
 import AIInterviewer,{type InterviewResult} from './ai-interviewer';
-'use client';
 import {useState,useEffect,useRef,useCallback} from 'react';
 import {Mic,MicOff,AudioLines,ArrowUpRight,ArrowRight,BookOpen,NotebookPen,ChartNoAxesCombined,GraduationCap,LayoutDashboard,Sparkles,Settings,HelpCircle,Users,Clock,Flame,Check,Volume2,VolumeX,Send,Search,Trash2,RotateCcw,Code,Target,Play,Square,LogOut,FileSearch,Bot} from 'lucide-react';
 import {SidebarProvider,Sidebar,SidebarContent,SidebarHeader,SidebarFooter,SidebarMenu,SidebarMenuItem,SidebarMenuButton,SidebarInset,SidebarTrigger} from '@/components/ui/sidebar';
