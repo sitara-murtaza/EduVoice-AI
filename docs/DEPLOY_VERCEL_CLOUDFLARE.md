@@ -10,16 +10,15 @@ and `.openai/hosting.json` are separate from this deployment.
 - Use Node.js 22.13+ and pnpm 11.25.0 (`corepack enable`).
 - Have a Cloudflare account and an AssemblyAI key for voice features; add a
   Gemini key for the text tutor and AI grading.
-- **Authentication blocker:** The API requires an authenticated user whenever
-  an AI provider key is set. It uses Supabase Auth, but the current UI has no
-  sign-in or sign-up controls. Configure and expose a supported sign-in flow,
-  or design a protected guest access flow with durable abuse controls before
-  offering paid AI features publicly. Do not disable the identity check just
-  to get a successful deployment.
-- If using Supabase Auth, create the `profiles` table with `user_id` as the
-  unique owner key, `data` as JSON, and appropriate per-user RLS policies.
-  This repository does not include that migration. The starter's D1 schema is
-  empty; a Cloudflare D1 database is not required for the current API.
+- Create a Cloudflare Turnstile widget for the Vercel production hostname. It
+  provides account-free guest access. Store its site key and secret in the
+  Worker; do not configure Supabase if using this mode. Learning progress stays
+  in the visitor's browser rather than syncing across devices.
+- Set billing limits and monitor usage with your AI providers. The Worker has
+  per-guest and global minute-based rate limiting, but Cloudflare's counters
+  are local to each location and eventually consistent, so they are not a
+  strict spending cap.
+- The starter's D1 schema is empty. No database is required for guest mode.
 
 ## 1. Deploy the Cloudflare API
 
@@ -42,10 +41,15 @@ Secrets, add the following **server-side** values:
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase publishable/anon key used by the Worker |
 | `FRONTEND_ORIGIN` | Exact Vercel production origin, such as `https://eduvoice-ai.vercel.app` |
 | `GEMINI_MODEL` | Optional; defaults to `gemini-2.5-flash` |
+| `TURNSTILE_SITE_KEY` | Public site key for the Vercel hostname |
+| `TURNSTILE_SECRET_KEY` | Secret key for Turnstile server verification |
+| `GUEST_SESSION_SECRET` | A unique, random secret (at least 32 bytes) for signing guest cookies |
 
-Despite their legacy `NEXT_PUBLIC_` names, the Supabase values above are read
-inside the Worker. Never put provider API keys in Vercel client variables or
-the GitHub repository. Set `FRONTEND_ORIGIN` once the Vercel URL is known.
+Leave the Supabase variables unset for account-free guest access; they are an
+alternative mode that requires an account UI and a `profiles` table with
+per-user RLS. Despite their legacy `NEXT_PUBLIC_` names, they are read inside
+the Worker. Never put provider API keys in Vercel client variables or the
+GitHub repository. Set `FRONTEND_ORIGIN` once the Vercel URL is known.
 
 ## 2. Deploy the Vercel frontend
 
@@ -68,8 +72,9 @@ and run `corepack pnpm dev`. For local Worker development run
 - Open `https://<worker>/api/config` and `https://<vercel>/api/config`.
   Both should return JSON. The second URL must be served through Vercel's
   external rewrite.
-- Test sign-in and one tutor request only after authentication is configured.
-  Without a signed-in user, AI endpoints should respond with HTTP 401.
+- Open a tutor page, complete Turnstile and test one AI request. A direct AI
+  request without a valid guest cookie should respond with HTTP 401. Guest
+  cookies expire after one day, and the visitor can complete Turnstile again.
 - Confirm a microphone session with actual AssemblyAI credentials and credits.
   The build and Wrangler dry run cannot test the provider's service.
 
